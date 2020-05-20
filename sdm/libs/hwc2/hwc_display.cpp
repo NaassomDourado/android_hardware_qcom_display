@@ -498,8 +498,13 @@ void HWCDisplay::BuildLayerStack() {
       layer->flags.solid_fill = true;
     }
 
-    if (!hwc_layer->ValidateAndSetCSC()) {
-#ifdef FEATURE_WIDE_COLOR
+#ifdef FOD_ZPOS
+    if (hwc_layer->IsFodPressed()) {
+      layer->flags.fod_pressed = true;
+    }
+#endif
+
+    if (!hwc_layer->IsDataSpaceSupported()) {
       layer->flags.skip = true;
 #endif
     }
