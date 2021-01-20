@@ -1007,104 +1007,37 @@ void HWDeviceDRM::SetupAtomic(HWLayers *hw_layers, bool validate) {
 
       if (pipe_info->valid && fb_id) {
         uint32_t pipe_id = pipe_info->pipe_id;
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_ALPHA, pipe_id, layer.plane_alpha);
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_ZORDER, pipe_id, pipe_info->z_order);
+        DRMBlendType blending = {};
+        SetBlending(layer.blending, &blending);
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_BLEND_TYPE, pipe_id, blending);
+        DRMRect src = {};
+        SetRect(pipe_info->src_roi, &src);
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_SRC_RECT, pipe_id, src);
+        DRMRect rot_dst = {0, 0, 0, 0};
+        if (hw_rotator_session->mode == kRotatorInline && hw_rotate_info->valid) {
+          SetRect(hw_rotate_info->dst_roi, &rot_dst);
+          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_ROTATION_DST_RECT, pipe_id, rot_dst);
+        }
+        DRMRect dst = {};
+        SetRect(pipe_info->dst_roi, &dst);
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_DST_RECT, pipe_id, dst);
 
-        if (update_config) {
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_ALPHA, pipe_id, layer.plane_alpha);
+        uint32_t rot_bit_mask = 0;
+        SetRotation(layer.transform, hw_rotator_session->mode, &rot_bit_mask);
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_ROTATION, pipe_id, rot_bit_mask);
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_H_DECIMATION, pipe_id,
+                                  pipe_info->horizontal_decimation);
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_V_DECIMATION, pipe_id,
+                                  pipe_info->vertical_decimation);
 
-#ifdef FOD_ZPOS
-          uint32_t z_order = pipe_info->z_order;
-          if (layer.flags.fod_pressed
-              || (hw_layer_info.stack->flags.fod_pressed_present
-                && i == hw_layer_count - 1)) {
-            z_order |= FOD_PRESSED_LAYER_ZORDER;
-          }
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_ZORDER, pipe_id, z_order);
-#else
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_ZORDER, pipe_id, pipe_info->z_order);
-#endif
-
-          DRMBlendType blending = {};
-          SetBlending(layer.blending, &blending);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_BLEND_TYPE, pipe_id, blending);
-
-          DRMRect src = {};
-          SetRect(pipe_info->src_roi, &src);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_SRC_RECT, pipe_id, src);
-
-          DRMRect dst = {};
-          SetRect(pipe_info->dst_roi, &dst);
-          LayerRect right_mixer = {FLOAT(mixer_attributes_.split_left), 0,
-                                   FLOAT(mixer_attributes_.width), FLOAT(mixer_attributes_.height)};
-          LayerRect dst_roi = pipe_info->dst_roi;
-
-          // For larget displays ie; 2 * 2k * 2k * 90 fps 4 LM's get programmed.
-          // Each pair of LM's drive independent displays.
-          // Layout Index indicates the panel onto which pipe gets staged.
-          DRMSSPPLayoutIndex layout_index = DRMSSPPLayoutIndex::NONE;
-          if (mixer_attributes_.split_type == kQuadSplit) {
-            layout_index = DRMSSPPLayoutIndex::LEFT;
-            if (IsValid(Intersection(dst_roi, right_mixer))) {
-              dst_roi = Reposition(dst_roi, -INT(mixer_attributes_.split_left), 0);
-              layout_index = DRMSSPPLayoutIndex::RIGHT;
-              DLOGV_IF(kTagDriverConfig, "Layer index = %d sspp layout = RIGHT", i);
-              DLOGV_IF(kTagDriverConfig, "Right dst_roi l = %f t = %f r = %f b = %f",
-                       dst_roi.left, dst_roi.top, dst_roi.right, dst_roi.bottom);
-            } else {
-              DLOGV_IF(kTagDriverConfig, "Layer index = %d sspp layout = LEFT", i);
-              DLOGV_IF(kTagDriverConfig, "Left dst_roi l = %f t = %f r = %f b = %f",
-                       dst_roi.left, dst_roi.top, dst_roi.right, dst_roi.bottom);
-            }
-          }
-          SetRect(dst_roi, &dst);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_DST_RECT, pipe_id, dst);
-
-          // Update Layout index.
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_SSPP_LAYOUT, pipe_id, layout_index);
-
-          DRMRect excl = {};
-          SetRect(pipe_info->excl_rect, &excl);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_EXCL_RECT, pipe_id, excl);
-
-          uint32_t rot_bit_mask = 0;
-          SetRotation(layer.transform, layer_config, &rot_bit_mask);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_ROTATION, pipe_id, rot_bit_mask);
-
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_H_DECIMATION, pipe_id,
-                                    pipe_info->horizontal_decimation);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_V_DECIMATION, pipe_id,
-                                    pipe_info->vertical_decimation);
-
-          DRMSecureMode fb_secure_mode;
-          DRMSecurityLevel security_level;
-          SetSecureConfig(layer.input_buffer, &fb_secure_mode, &security_level);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_FB_SECURE_MODE, pipe_id, fb_secure_mode);
-          if (security_level > crtc_security_level) {
-            crtc_security_level = security_level;
-          }
-
-          uint32_t config = 0;
-          SetSrcConfig(layer.input_buffer, hw_rotator_session->mode, &config);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_SRC_CONFIG, pipe_id, config);;
-
-          if (hw_scale_) {
-            SDEScaler scaler_output = {};
-            hw_scale_->SetScaler(pipe_info->scale_data, &scaler_output);
-            // TODO(user): Remove qseed3 and add version check, then send appropriate scaler object
-            if (hw_resource_.has_qseed3) {
-              drm_atomic_intf_->Perform(DRMOps::PLANE_SET_SCALER_CONFIG, pipe_id,
-                                        reinterpret_cast<uint64_t>(&scaler_output.scaler_v2));
-            }
-          }
-
-          DRMCscType csc_type = DRMCscType::kCscTypeMax;
-          SelectCscType(layer.input_buffer, &csc_type);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_CSC_CONFIG, pipe_id, &csc_type);
-
-          DRMMultiRectMode multirect_mode;
-          SetMultiRectMode(pipe_info->flags, &multirect_mode);
-          drm_atomic_intf_->Perform(DRMOps::PLANE_SET_MULTIRECT_MODE, pipe_id, multirect_mode);
-
-          SetSsppTonemapFeatures(pipe_info);
+        DRMSecureMode fb_secure_mode;
+        DRMSecurityLevel security_level;
+        SetSecureConfig(layer.input_buffer, &fb_secure_mode, &security_level);
+        drm_atomic_intf_->Perform(DRMOps::PLANE_SET_FB_SECURE_MODE, pipe_id, fb_secure_mode);
+        if (security_level > crtc_security_level) {
+          crtc_security_level = security_level;
         }
 
         uint32_t config = 0;
